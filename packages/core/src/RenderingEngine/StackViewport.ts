@@ -162,6 +162,8 @@ class StackViewport extends Viewport implements IStackViewport {
   // Camera properties
   private initialViewUp: Point3;
 
+  private maskData: ImageData;
+
   /**
    * Constructor for the StackViewport class
    * @param props - ViewportInput
@@ -210,6 +212,10 @@ class StackViewport extends Viewport implements IStackViewport {
 
   static get useCustomRenderingPipeline(): boolean {
     return getShouldUseCPURendering();
+  }
+
+  public setMaskData(imageData: ImageData) {
+    this.maskData = imageData;
   }
 
   private initializeElementDisabledHandler() {
@@ -1742,6 +1748,26 @@ class StackViewport extends Viewport implements IStackViewport {
    * @returns
    */
   private _updateActorToDisplayImageId(image) {
+    if (this.maskData && this.maskData.data && this.maskData.data.length > 0) {
+      const pixelDataFloat32 = image.getPixelData();
+      const pixelData = new Uint8Array(pixelDataFloat32.buffer);
+
+      const canvasTmp = document.createElement('canvas');
+      canvasTmp.width = this.maskData.width;
+      canvasTmp.height = this.maskData.height;
+      const ctx = canvasTmp.getContext('2d');
+      ctx.putImageData(this.maskData, 0, 0);
+      const maskData = this.maskData.data;
+
+      for (let i = 0; i < pixelData.length; i += 4) {
+        const maskPixel = maskData[i] + maskData[i + 1] + maskData[i + 2];
+        if (maskPixel !== 0) {
+          pixelData[i + 1] = 255; // Green channel
+          pixelData[i + 3] = 255; // Alpha channel
+        }
+      }
+    }
+
     // This function should do the following:
     // - Get the existing actor's vtkImageData that is being used to render the current image and check if we can reuse the vtkImageData that is in place (i.e. do the image dimensions and data type match?)
     // - If we can reuse it, replace the scalar data under the hood
