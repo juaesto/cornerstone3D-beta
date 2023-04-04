@@ -4,6 +4,8 @@ import CORNERSTONE_3D_TAG from "./cornerstone3DTag";
 import MeasurementReport from "./MeasurementReport";
 import isValidCornerstoneTrackingIdentifier from "./isValidCornerstoneTrackingIdentifier";
 
+type Point3 = [number, number, number];
+
 const { Ellipse: TID300Ellipse } = utilities.TID300;
 
 const ELLIPTICALROI = "EllipticalROI";
@@ -40,7 +42,7 @@ class EllipticalROI {
         // But Cornerstone3D points are ordered as top, bottom, left, right for the
         // ellipse so we need to identify if the majorAxis is horizontal or vertical
         // in the image plane and then choose the correct points to use for the ellipse.
-        const pointsWorld = [];
+        const pointsWorld: Point3[] = [];
         for (let i = 0; i < GraphicData.length; i += 2) {
             const worldPos = imageToWorldCoords(referencedImageId, [
                 GraphicData[i],
@@ -77,8 +79,11 @@ class EllipticalROI {
         const { columnCosines } = imagePlaneModule;
 
         // find which axis is parallel to the columnCosines
-        const columnCosinesVec = vec3.fromValues(...columnCosines);
-
+        const columnCosinesVec = vec3.fromValues(
+            columnCosines[0],
+            columnCosines[1],
+            columnCosines[2]
+        );
         const projectedMajorAxisOnColVec = vec3.dot(
             columnCosinesVec,
             majorAxisVec
@@ -137,7 +142,7 @@ class EllipticalROI {
     static getTID300RepresentationArguments(tool, worldToImageCoords) {
         const { data, finding, findingSites, metadata } = tool;
         const { cachedStats = {}, handles } = data;
-
+        const rotation = data.initialRotation || 0;
         const { referencedImageId } = metadata;
 
         if (!referencedImageId) {
@@ -145,11 +150,19 @@ class EllipticalROI {
                 "EllipticalROI.getTID300RepresentationArguments: referencedImageId is not defined"
             );
         }
-
-        const top = worldToImageCoords(referencedImageId, handles.points[0]);
-        const bottom = worldToImageCoords(referencedImageId, handles.points[1]);
-        const left = worldToImageCoords(referencedImageId, handles.points[2]);
-        const right = worldToImageCoords(referencedImageId, handles.points[3]);
+        let top, bottom, left, right;
+        // this way when it's restored we can assume the initial rotation is 0.
+        if (rotation == 90 || rotation == 270) {
+            bottom = worldToImageCoords(referencedImageId, handles.points[2]);
+            top = worldToImageCoords(referencedImageId, handles.points[3]);
+            left = worldToImageCoords(referencedImageId, handles.points[0]);
+            right = worldToImageCoords(referencedImageId, handles.points[1]);
+        } else {
+            top = worldToImageCoords(referencedImageId, handles.points[0]);
+            bottom = worldToImageCoords(referencedImageId, handles.points[1]);
+            left = worldToImageCoords(referencedImageId, handles.points[2]);
+            right = worldToImageCoords(referencedImageId, handles.points[3]);
+        }
 
         // find the major axis and minor axis
         const topBottomLength = Math.abs(top[1] - bottom[1]);

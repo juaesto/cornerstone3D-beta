@@ -22,6 +22,7 @@ import {
   getAnnotations,
   removeAnnotation,
 } from '../stateManagement/annotation/annotationState';
+
 import {
   drawCircle as drawCircleSvg,
   drawHandles as drawHandlesSvg,
@@ -61,6 +62,15 @@ interface ToolConfiguration {
     getReferenceLineDraggableRotatable?: (viewportId: string) => boolean;
     getReferenceLineSlabThicknessControlsOn?: (viewportId: string) => boolean;
     shadow?: boolean;
+    autopan?: {
+      enabled: boolean;
+      panSize: number;
+    };
+    mobile?: {
+      enabled: boolean;
+      opacity: number;
+      handleRadius: number;
+    };
   };
 }
 
@@ -147,6 +157,11 @@ class CrosshairsTool extends AnnotationTool {
         filterActorUIDsToSetSlabThickness: [],
         // blend mode for slabThickness modifications
         slabThicknessBlendMode: Enums.BlendModes.MAXIMUM_INTENSITY_BLEND,
+        mobile: {
+          enabled: false,
+          opacity: 0.8,
+          handleRadius: 9,
+        },
       },
     }
   ) {
@@ -471,7 +486,6 @@ class CrosshairsTool extends AnnotationTool {
   ): void => {
     const eventDetail = evt.detail;
     const { element } = eventDetail;
-
     annotation.highlighted = true;
 
     // NOTE: handle index or coordinates are not used when dragging.
@@ -518,7 +532,6 @@ class CrosshairsTool extends AnnotationTool {
     const eventDetail = evt.detail;
     const { element } = eventDetail;
     annotation.highlighted = true;
-
     this._activateModify(element);
 
     hideElementCursor(element);
@@ -1099,16 +1112,20 @@ class CrosshairsTool extends AnnotationTool {
         otherViewport.id
       );
       const viewportDraggableRotatable =
-        this._getReferenceLineDraggableRotatable(otherViewport.id);
+        this._getReferenceLineDraggableRotatable(otherViewport.id) ||
+        this.configuration.mobile?.enabled;
       const viewportSlabThicknessControlsOn =
-        this._getReferenceLineSlabThicknessControlsOn(otherViewport.id);
+        this._getReferenceLineSlabThicknessControlsOn(otherViewport.id) ||
+        this.configuration.mobile?.enabled;
       const selectedViewportId = data.activeViewportIds.find(
         (id) => id === otherViewport.id
       );
 
       let color =
         viewportColor !== undefined ? viewportColor : 'rgb(200, 200, 200)';
+
       let lineWidth = 1;
+
       const lineActive =
         data.handles.activeOperation !== null &&
         data.handles.activeOperation === OPERATION.DRAG &&
@@ -1217,7 +1234,7 @@ class CrosshairsTool extends AnnotationTool {
         );
 
         if (
-          lineActive &&
+          (lineActive || this.configuration.mobile?.enabled) &&
           !rotHandlesActive &&
           !slabThicknessHandlesActive &&
           viewportDraggableRotatable &&
@@ -1232,7 +1249,12 @@ class CrosshairsTool extends AnnotationTool {
             rotationHandles,
             {
               color,
-              handleRadius: 3,
+              handleRadius: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.handleRadius
+                : 3,
+              opacity: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.opacity
+                : 1,
               type: 'circle',
             }
           );
@@ -1244,7 +1266,12 @@ class CrosshairsTool extends AnnotationTool {
             slabThicknessHandles,
             {
               color,
-              handleRadius: 3,
+              handleRadius: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.handleRadius
+                : 3,
+              opacity: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.opacity
+                : 1,
               type: 'rect',
             }
           );
@@ -1263,7 +1290,12 @@ class CrosshairsTool extends AnnotationTool {
             rotationHandles,
             {
               color,
-              handleRadius: 3,
+              handleRadius: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.handleRadius
+                : 3,
+              opacity: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.opacity
+                : 1,
               type: 'circle',
             }
           );
@@ -1282,7 +1314,12 @@ class CrosshairsTool extends AnnotationTool {
             slabThicknessHandles,
             {
               color,
-              handleRadius: 3,
+              handleRadius: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.handleRadius
+                : 3,
+              opacity: this.configuration.mobile?.enabled
+                ? this.configuration.mobile?.opacity
+                : 1,
               type: 'rect',
             }
           );
@@ -1896,7 +1933,10 @@ class CrosshairsTool extends AnnotationTool {
   };
 
   _activateModify = (element) => {
-    state.isInteractingWithTool = true;
+    // mobile sometimes has lingering interaction even when touchEnd triggers
+    // this check allows for multiple handles to be active which doesn't affect
+    // tool usage.
+    state.isInteractingWithTool = !this.configuration.mobile?.enabled;
 
     element.addEventListener(Events.MOUSE_UP, this._endCallback);
     element.addEventListener(Events.MOUSE_DRAG, this._dragCallback);

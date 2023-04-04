@@ -13,6 +13,7 @@ import eventTarget from '../eventTarget';
 import triggerEvent from '../utilities/triggerEvent';
 import { uuidv4 } from '../utilities';
 import { Point3, Metadata, EventTypes, Mat3 } from '../types';
+import { getConfiguration } from '../init';
 
 interface VolumeLoaderOptions {
   imageIds: Array<string>;
@@ -21,12 +22,12 @@ interface VolumeLoaderOptions {
 interface DerivedVolumeOptions {
   volumeId: string;
   targetBuffer?: {
-    type: 'Float32Array' | 'Uint8Array';
+    type: 'Float32Array' | 'Uint8Array' | 'Uint16Array' | 'Int16Array';
     sharedArrayBuffer?: boolean;
   };
 }
 interface LocalVolumeOptions {
-  scalarData: Float32Array | Uint8Array;
+  scalarData: Float32Array | Uint8Array | Uint16Array | Int16Array;
   metadata: Metadata;
   dimensions: Point3;
   spacing: Point3;
@@ -243,7 +244,8 @@ export async function createAndCacheVolume(
  * is given, it will be used to generate the intensity values for the derivedVolume.
  * Finally, it will save the volume in the cache.
  * @param referencedVolumeId - the volumeId from which the new volume will get its metadata
- * @param options - DerivedVolumeOptions {uid: derivedVolumeUID, targetBuffer: { type: FLOAT32Array | Uint8Array}, scalarData: if provided}
+ * @param options - DerivedVolumeOptions {uid: derivedVolumeUID, targetBuffer: { type: Float32Array | Uint8Array |
+ * Uint16Array | Uint32Array  }, scalarData: if provided}
  *
  * @returns ImageVolume
  */
@@ -272,6 +274,8 @@ export async function createAndCacheDerivedVolume(
 
   let numBytes, TypedArray;
 
+  const { useNorm16Texture } = getConfiguration().rendering;
+
   // If target buffer is provided
   if (targetBuffer) {
     if (targetBuffer.type === 'Float32Array') {
@@ -280,6 +284,12 @@ export async function createAndCacheDerivedVolume(
     } else if (targetBuffer.type === 'Uint8Array') {
       numBytes = scalarLength;
       TypedArray = Uint8Array;
+    } else if (useNorm16Texture && targetBuffer.type === 'Uint16Array') {
+      numBytes = scalarLength * 2;
+      TypedArray = Uint16Array;
+    } else if (useNorm16Texture && targetBuffer.type === 'Int16Array') {
+      numBytes = scalarLength * 2;
+      TypedArray = Uint16Array;
     } else {
       throw new Error('TargetBuffer should be Float32Array or Uint8Array');
     }
@@ -360,10 +370,15 @@ export function createLocalVolume(
 
   if (
     !scalarData ||
-    !(scalarData instanceof Uint8Array || scalarData instanceof Float32Array)
+    !(
+      scalarData instanceof Uint8Array ||
+      scalarData instanceof Float32Array ||
+      scalarData instanceof Uint16Array ||
+      scalarData instanceof Int16Array
+    )
   ) {
     throw new Error(
-      'To use createLocalVolume you should pass scalarData of type Uint8Array or Float32Array'
+      'To use createLocalVolume you should pass scalarData of type Uint8Array, Uint16Array, Int16Array or Float32Array'
     );
   }
 
@@ -437,6 +452,11 @@ export function registerVolumeLoader(
   volumeLoader: Types.VolumeLoaderFn
 ): void {
   volumeLoaders[scheme] = volumeLoader;
+}
+
+/** Gets the array of volume loader schemes */
+export function getVolumeLoaderSchemes(): string[] {
+  return Object.keys(volumeLoaders);
 }
 
 /**

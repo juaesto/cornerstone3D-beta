@@ -57,7 +57,8 @@ type CameraModifiedEventDetail = {
 type ContourData = {
     points: Point3[];
     type: ContourType;
-    color?: Point3;
+    color: Point3;
+    segmentIndex: number;
 };
 
 // @public (undocumented)
@@ -66,6 +67,7 @@ type ContourSetData = {
     data: ContourData[];
     frameOfReferenceUID: string;
     color?: Point3;
+    segmentIndex?: number;
 };
 
 // @public (undocumented)
@@ -75,6 +77,38 @@ enum ContourType {
     // (undocumented)
     OPEN_PLANAR = 'OPEN_PLANAR',
 }
+
+// @public (undocumented)
+type Cornerstone3DConfig = {
+    detectGPU: any;
+    rendering: {
+        // vtk.js supports 8bit integer textures and 32bit float textures.
+        // However, if the client has norm16 textures (it can be seen by visiting
+        // the webGl report at https://webglreport.com/?v=2), vtk will be default
+        // to use it to improve memory usage. However, if the client don't have
+        // it still another level of optimization can happen by setting the
+        // preferSizeOverAccuracy since it will reduce the size of the texture to half
+        // float at the cost of accuracy in rendering. This is a tradeoff that the
+        // client can decide.
+        //
+        // Read more in the following Pull Request:
+        // 1. HalfFloat: https://github.com/Kitware/vtk-js/pull/2046
+        // 2. Norm16: https://github.com/Kitware/vtk-js/pull/2058
+        preferSizeOverAccuracy: boolean;
+        // Whether the EXT_texture_norm16 extension is supported by the browser.
+        // WebGL 2 report (link: https://webglreport.com/?v=2) can be used to check
+        // if the browser supports this extension.
+        // In case the browser supports this extension, instead of using 32bit float
+        // textures, 16bit float textures will be used to reduce the memory usage where
+        // possible.
+        // Norm16 may not work currently due to the two active bugs in chrome + safari
+        // https://bugs.chromium.org/p/chromium/issues/detail?id=1408247
+        // https://bugs.webkit.org/show_bug.cgi?id=252039
+        useNorm16Texture: boolean;
+        useCPURendering: boolean;
+        strictZSpacingForVolumeViewport: boolean;
+    };
+};
 
 // @public (undocumented)
 export function cornerstoneStreamingDynamicImageVolumeLoader(volumeId: string, options: {
@@ -370,6 +404,13 @@ interface CustomEvent_2<T = any> extends Event {
 }
 
 // @public
+enum DynamicOperatorType {
+    AVERAGE = 'AVERAGE',
+    SUBTRACT = 'SUBTRACT',
+    SUM = 'SUM',
+}
+
+// @public
 type ElementDisabledEvent = CustomEvent_2<ElementDisabledEventDetail>;
 
 // @public
@@ -423,8 +464,9 @@ enum Events {
 
     VOLUME_NEW_IMAGE = 'CORNERSTONE_VOLUME_NEW_IMAGE',
 
-    VOLUME_VIEWPORT_NEW_VOLUME = 'CORNERSTONE_VOLUME_VIEWPORT_NEW_VOLUME',
+    VOLUME_SCROLL_OUT_OF_BOUNDS = 'CORNERSTONE_VOLUME_SCROLL_OUT_OF_BOUNDS',
 
+    VOLUME_VIEWPORT_NEW_VOLUME = 'CORNERSTONE_VOLUME_VIEWPORT_NEW_VOLUME',
     // IMAGE_CACHE_FULL = 'CORNERSTONE_IMAGE_CACHE_FULL',
     // PRE_RENDER = 'CORNERSTONE_PRE_RENDER',
     // ELEMENT_RESIZED = 'CORNERSTONE_ELEMENT_RESIZED',
@@ -610,6 +652,8 @@ interface IContourSet {
     getNumberOfPointsInAContour(contourIndex: number): number;
     getPointsInContour(contourIndex: number): Point3[];
     // (undocumented)
+    getSegmentIndex(): number;
+    // (undocumented)
     getSizeInBytes(): number;
     getTotalNumberOfPoints(): number;
     // (undocumented)
@@ -638,7 +682,7 @@ interface IEnabledElement {
 // @public (undocumented)
 interface IGeometry {
     // (undocumented)
-    data: ContourSet;
+    data: IContourSet;
     // (undocumented)
     id: string;
     // (undocumented)
@@ -744,7 +788,7 @@ interface IImageData {
             suvbw?: number;
         };
     };
-    scalarData: Float32Array;
+    scalarData: Float32Array | Uint16Array | Uint8Array | Int16Array;
     scaling?: Scaling;
     spacing: Point3;
 }
@@ -1007,6 +1051,7 @@ interface IStreamingVolumeProperties {
     loadStatus: {
         loaded: boolean;
         loading: boolean;
+        cancelled: boolean;
         cachedFrames: Array<boolean>;
         callbacks: Array<() => void>;
     };
@@ -1324,6 +1369,7 @@ type StackViewportProperties = {
     interpolationType?: InterpolationType;
     rotation?: number;
     suppressEvents?: boolean;
+    isComputedVOI?: boolean;
 };
 
 // @public (undocumented)
@@ -1525,7 +1571,7 @@ type VolumeNewImageEventDetail = {
 };
 
 // @public (undocumented)
-type VolumeScalarData = Float32Array | Uint8Array;
+type VolumeScalarData = Float32Array | Uint8Array | Uint16Array | Int16Array;
 
 // @public
 type VolumeViewportProperties = {

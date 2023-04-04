@@ -29,6 +29,7 @@ export default class BaseStreamingImageVolume extends ImageVolume {
   loadStatus: {
     loaded: boolean;
     loading: boolean;
+    cancelled: boolean;
     cachedFrames: Array<boolean>;
     callbacks: Array<(...args: unknown[]) => void>;
   };
@@ -175,6 +176,7 @@ export default class BaseStreamingImageVolume extends ImageVolume {
 
     // Set to not loading.
     loadStatus.loading = false;
+    loadStatus.cancelled = true;
 
     // Remove all the callback listeners
     this.clearLoadCallbacks();
@@ -251,8 +253,6 @@ export default class BaseStreamingImageVolume extends ImageVolume {
     const { vtkOpenGLTexture, imageData, metadata, volumeId } = this;
     const { FrameOfReferenceUID } = metadata;
 
-    loadStatus.loading = true;
-
     // SharedArrayBuffer
     const arrayBuffer = scalarData.buffer;
     const numFrames = imageIds.length;
@@ -268,6 +268,10 @@ export default class BaseStreamingImageVolume extends ImageVolume {
       type = 'Uint8Array';
     } else if (scalarData instanceof Float32Array) {
       type = 'Float32Array';
+    } else if (scalarData instanceof Uint16Array) {
+      type = 'Uint16Array';
+    } else if (scalarData instanceof Int16Array) {
+      type = 'Int16Array';
     } else {
       throw new Error('Unsupported array type');
     }
@@ -313,8 +317,13 @@ export default class BaseStreamingImageVolume extends ImageVolume {
       // data loader scheme)
       const cachedImage = cache.getCachedImageBasedOnImageURI(imageId);
 
-      // check if we are still loading the volume and we have not canceled loading
-      if (!loadStatus.loading) {
+      // check if the load was cancelled while we were waiting for the image
+      // if so we don't want to do anything
+      if (loadStatus.cancelled) {
+        console.warn(
+          'volume load cancelled, returning for imageIdIndex: ',
+          imageIdIndex
+        );
         return;
       }
 
@@ -349,7 +358,7 @@ export default class BaseStreamingImageVolume extends ImageVolume {
           updateTextureAndTriggerEvents(this, imageIdIndex, imageId);
         })
         .catch((err) => {
-          errorCallback(err, imageIdIndex, imageId);
+          errorCallback.call(this, err, imageIdIndex, imageId);
         });
       return;
     };
@@ -455,18 +464,40 @@ export default class BaseStreamingImageVolume extends ImageVolume {
 
       const offset = options.targetBuffer.offset; // in bytes
       const length = options.targetBuffer.length; // in frames
+      const pixelData = image.pixelData
+        ? image.pixelData
+        : image.getPixelData();
+
       try {
         if (scalarData instanceof Float32Array) {
           const bytesInFloat = 4;
-          const floatView = new Float32Array(image.pixelData);
+          const floatView = new Float32Array(pixelData);
           if (floatView.length !== length) {
             throw 'Error pixelData length does not match frame length';
           }
+          // since set is based on the underlying type,
+          // we need to divide the offset bytes by the byte type
           scalarData.set(floatView, offset / bytesInFloat);
+        }
+        if (scalarData instanceof Int16Array) {
+          const bytesInInt16 = 2;
+          const intView = new Int16Array(pixelData);
+          if (intView.length !== length) {
+            throw 'Error pixelData length does not match frame length';
+          }
+          scalarData.set(intView, offset / bytesInInt16);
+        }
+        if (scalarData instanceof Uint16Array) {
+          const bytesInUint16 = 2;
+          const intView = new Uint16Array(pixelData);
+          if (intView.length !== length) {
+            throw 'Error pixelData length does not match frame length';
+          }
+          scalarData.set(intView, offset / bytesInUint16);
         }
         if (scalarData instanceof Uint8Array) {
           const bytesInUint8 = 1;
-          const intView = new Uint8Array(image.pixelData);
+          const intView = new Uint8Array(pixelData);
           if (intView.length !== length) {
             throw 'Error pixelData length does not match frame length';
           }
@@ -544,12 +575,12 @@ export default class BaseStreamingImageVolume extends ImageVolume {
         return imageLoader.loadImage(imageId, options).then(
           (image) => {
             // scalarData is the volume container we are progressively loading into
-            // image is the pixelData decoded from workers in cornerstoneWADOImageLoader
+            // image is the pixelData decoded from workers in cornerstoneDICOMImageLoader
             handleArrayBufferLoad(scalarData, image, options);
             successCallback(imageIdIndex, imageId, scalingParameters);
           },
           (error) => {
-            errorCallback(error, imageIdIndex, imageId);
+            errorCallback.call(this, error, imageIdIndex, imageId);
           }
         );
       };
@@ -587,10 +618,14 @@ export default class BaseStreamingImageVolume extends ImageVolume {
   }
 
   private _prefetchImageIds(priority: number): void {
+    // Note: here is the correct location to set the loading flag
+    // since getImageIdsRequest is just grabbing and building requests
+    // and not actually executing them
+    this.loadStatus.loading = true;
+
     const requests = this.getImageLoadRequests(priority);
 
-    // requests.reverse().forEach((request) => {
-    requests.forEach((request) => {
+    requests.reverse().forEach((request) => {
       if (!request) {
         // there is a cached image for the imageId and no requests will fire
         return;
