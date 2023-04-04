@@ -361,6 +361,141 @@ class StackViewport extends Viewport implements IStackViewport {
 
   private setInvertColor: (invert: boolean) => void;
 
+  public setUseCPURendering(value: boolean) {
+    this.useCPURendering = value;
+    this._configureRenderingPipeline();
+  }
+
+  private _configureRenderingPipeline() {
+    for (const [funcName, functions] of Object.entries(
+      this.renderingPipelineFunctions
+    )) {
+      this[funcName] = this.useCPURendering ? functions.cpu : functions.gpu;
+    }
+  }
+
+  /**
+   * Returns the image and its properties that is being shown inside the
+   * stack viewport. It returns, the image dimensions, image direction,
+   * image scalar data, vtkImageData object, metadata, and scaling (e.g., PET suvbw)
+   *
+   * @returns IImageData: dimensions, direction, scalarData, vtkImageData, metadata, scaling
+   */
+  public getImageData: () => IImageData | CPUIImageData;
+
+  /**
+   * Sets the colormap for the current viewport.
+   * @param colormap - The colormap data to use.
+   */
+  public setColormap: (colormap: CPUFallbackColormapData) => void;
+
+  /**
+   * If the user has selected CPU rendering, return the CPU camera, otherwise
+   * return the default camera
+   * @returns The camera object.
+   */
+  public getCamera: () => ICamera;
+
+  /**
+   * Set the camera based on the provided camera object.
+   * @param cameraInterface - The camera interface that will be used to
+   * render the scene.
+   */
+  public setCamera: (
+    cameraInterface: ICamera,
+    storeAsInitialCamera?: boolean
+  ) => void;
+
+  public getRotation: () => number;
+
+  /**
+   * It sets the colormap to the default colormap.
+   */
+  public unsetColormap: () => void;
+
+  /**
+   * Centers Pan and resets the zoom for stack viewport.
+   */
+  public resetCamera: (resetPan?: boolean, resetZoom?: boolean) => boolean;
+
+  /**
+   * canvasToWorld Returns the world coordinates of the given `canvasPos`
+   * projected onto the plane defined by the `Viewport`'s camera.
+   *
+   * @param canvasPos - The position in canvas coordinates.
+   * @returns The corresponding world coordinates.
+   * @public
+   */
+  public canvasToWorld: (canvasPos: Point2) => Point3;
+
+  /**
+   * Returns the canvas coordinates of the given `worldPos`
+   * projected onto the `Viewport`'s `canvas`.
+   *
+   * @param worldPos - The position in world coordinates.
+   * @returns The corresponding canvas coordinates.
+   * @public
+   */
+  public worldToCanvas: (worldPos: Point3) => Point2;
+
+  /**
+   * If the renderer is CPU based, throw an error. Otherwise, returns the `vtkRenderer` responsible for rendering the `Viewport`.
+   *
+   * @returns The `vtkRenderer` for the `Viewport`.
+   */
+  public getRenderer: () => any;
+
+  /**
+   * If the renderer is CPU based, throw an error. Otherwise, return the default
+   * actor which is the first actor in the renderer.
+   * @returns An actor entry.
+   */
+  public getDefaultActor: () => ActorEntry;
+
+  /**
+   * If the renderer is CPU based, throw an error. Otherwise, return the actors in the viewport
+   * @returns An array of ActorEntry objects.
+   */
+  public getActors: () => Array<ActorEntry>;
+  /**
+   * If the renderer is CPU based, throw an error. Otherwise, it returns the actor entry for the given actor UID.
+   * @param actorUID - The unique ID of the actor you want to get.
+   * @returns An ActorEntry object.
+   */
+  public getActor: (actorUID: string) => ActorEntry;
+
+  /**
+   * If the renderer is CPU-based, throw an error; otherwise, set the
+   * actors in the viewport.
+   * @param actors - An array of ActorEntry objects.
+   */
+  public setActors: (actors: Array<ActorEntry>) => void;
+
+  /**
+   * If the renderer is CPU based, throw an error. Otherwise, add a list of actors to the viewport
+   * @param actors - An array of ActorEntry objects.
+   */
+  public addActors: (actors: Array<ActorEntry>) => void;
+
+  /**
+   * If the renderer is CPU based, throw an error. Otherwise, add the
+   * actor to the viewport
+   * @param actorEntry - The ActorEntry object that was created by the
+   * user.
+   */
+  public addActor: (actorEntry: ActorEntry) => void;
+
+  /**
+   * It throws an error if the renderer is CPU based. Otherwise, it removes the actors from the viewport.
+   */
+  public removeAllActors: () => void;
+
+  private setVOI: (voiRange: VOIRange, options?: SetVOIOptions) => void;
+
+  private setInterpolationType: (interpolationType: InterpolationType) => void;
+
+  private setInvertColor: (invert: boolean) => void;
+
   private initializeElementDisabledHandler() {
     eventTarget.addEventListener(
       Events.ELEMENT_DISABLED,
