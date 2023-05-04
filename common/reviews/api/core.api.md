@@ -519,6 +519,27 @@ interface CustomEvent_2<T = any> extends Event {
 const deepMerge: (target?: {}, source?: {}, optionsArgument?: any) => any;
 
 // @public (undocumented)
+type DisplayArea = {
+    imageArea: [number, number];
+    imageCanvasPoint: {
+        imagePoint: [number, number];
+        canvasPoint: [number, number];
+    };
+    storeAsInitialCamera: boolean;
+};
+
+// @public (undocumented)
+type DisplayAreaModifiedEvent = CustomEvent_2<DisplayAreaModifiedEventDetail>;
+
+// @public (undocumented)
+type DisplayAreaModifiedEventDetail = {
+    viewportId: string;
+    displayArea: DisplayArea;
+    volumeId?: string;
+    storeAsInitialCamera?: boolean;
+};
+
+// @public (undocumented)
 enum DynamicOperatorType {
     // (undocumented)
     AVERAGE = "AVERAGE",
@@ -576,6 +597,8 @@ export enum EVENTS {
     CAMERA_MODIFIED = "CORNERSTONE_CAMERA_MODIFIED",
     // (undocumented)
     CAMERA_RESET = "CORNERSTONE_CAMERA_RESET",
+    // (undocumented)
+    DISPLAY_AREA_MODIFIED = "CORNERSTONE_DISPLAY_AREA_MODIFIED",
     // (undocumented)
     ELEMENT_DISABLED = "CORNERSTONE_ELEMENT_DISABLED",
     // (undocumented)
@@ -635,6 +658,8 @@ declare namespace EventTypes {
         CameraModifiedEvent,
         VoiModifiedEvent,
         VoiModifiedEventDetail,
+        DisplayAreaModifiedEvent,
+        DisplayAreaModifiedEventDetail,
         ElementDisabledEvent,
         ElementDisabledEventDetail,
         ElementEnabledEvent,
@@ -931,6 +956,8 @@ interface IContourSet {
     // (undocumented)
     readonly frameOfReferenceUID: string;
     // (undocumented)
+    getCentroid(): Point3;
+    // (undocumented)
     getColor(): any;
     // (undocumented)
     getContours(): IContour[];
@@ -1025,7 +1052,7 @@ interface IImage {
     // (undocumented)
     getCanvas: () => HTMLCanvasElement;
     // (undocumented)
-    getPixelData: () => Array<number>;
+    getPixelData: () => PixelDataTypedArray;
     // (undocumented)
     height: number;
     // (undocumented)
@@ -1046,8 +1073,8 @@ interface IImage {
     numComps: number;
     // (undocumented)
     preScale?: {
-        scaled: boolean;
-        scalingParameters: {
+        scaled?: boolean;
+        scalingParameters?: {
             modality?: string;
             rescaleSlope?: number;
             rescaleIntercept?: number;
@@ -1345,7 +1372,7 @@ export class ImageVolume implements IImageVolume {
     // (undocumented)
     hasPixelSpacing: boolean;
     // (undocumented)
-    imageData?: any;
+    imageData?: vtkImageData;
     // (undocumented)
     get imageIds(): Array<string>;
     set imageIds(newImageIds: Array<string>);
@@ -1464,7 +1491,7 @@ interface IRenderingEngine {
 export function isCornerstoneInitialized(): boolean;
 
 // @public (undocumented)
-function isEqual(v1: number[] | Float32Array, v2: number[] | Float32Array, tolerance?: number): boolean;
+function isEqual<ValueType>(v1: ValueType, v2: ValueType, tolerance?: number): boolean;
 
 // @public (undocumented)
 function isImageActor(actorEntry: Types.ActorEntry): boolean;
@@ -1590,6 +1617,8 @@ interface IViewport {
     // (undocumented)
     getDefaultActor(): ActorEntry;
     // (undocumented)
+    getDisplayArea(): DisplayArea | undefined;
+    // (undocumented)
     getFrameOfReferenceUID: () => string;
     // (undocumented)
     getPan(): Point2;
@@ -1622,6 +1651,8 @@ interface IViewport {
     // (undocumented)
     setCamera(cameraInterface: ICamera, storeAsInitialCamera?: boolean): void;
     // (undocumented)
+    setDisplayArea(displayArea: DisplayArea, callResetCamera?: boolean, suppressEvents?: boolean): any;
+    // (undocumented)
     setOptions(options: ViewportInputOptions, immediate: boolean): void;
     // (undocumented)
     setPan(pan: Point2, storeAsInitialCamera?: boolean): any;
@@ -1639,6 +1670,8 @@ interface IViewport {
     sy: number;
     // (undocumented)
     type: ViewportType;
+    // (undocumented)
+    updateRenderingPipeline: () => void;
     // (undocumented)
     worldToCanvas: (worldPos: Point3) => Point2;
 }
@@ -1820,8 +1853,8 @@ export { metaData }
 
 // @public (undocumented)
 const metadataProvider: {
-    add: (imageId: string, payload: [number, number]) => void;
-    get: (type: string, imageId: string) => [number, number];
+    add: (imageId: string, payload: CalibratedPixelValue) => void;
+    get: (type: string, imageId: string) => CalibratedPixelValue;
 };
 
 // @public (undocumented)
@@ -2015,6 +2048,9 @@ type ScalingParameters = {
 export function setConfiguration(c: Cornerstone3DConfig): void;
 
 // @public (undocumented)
+export function setPreferSizeOverAccuracy(status: boolean): void;
+
+// @public (undocumented)
 export class Settings {
     constructor(base?: Settings);
     // (undocumented)
@@ -2165,6 +2201,8 @@ export class StackViewport extends Viewport implements IStackViewport {
     // (undocumented)
     unsetColormap: () => void;
     // (undocumented)
+    updateRenderingPipeline: () => void;
+    // (undocumented)
     static get useCustomRenderingPipeline(): boolean;
     // (undocumented)
     worldToCanvas: (worldPos: Point3) => Point2;
@@ -2275,6 +2313,7 @@ declare namespace Types {
         ViewportInputOptions,
         VOIRange,
         VOI,
+        DisplayArea,
         FlipDirection,
         ICachedImage,
         ICachedVolume,
@@ -2406,6 +2445,8 @@ export class Viewport implements IViewport {
     // (undocumented)
     getDefaultActor(): ActorEntry;
     // (undocumented)
+    getDisplayArea(): DisplayArea | undefined;
+    // (undocumented)
     _getEdges(bounds: Array<number>): Array<[number[], number[]]>;
     // (undocumented)
     _getFocalPointForResetCamera(centeredFocalPoint: Point3, previousCamera: ICamera, { resetPan, resetToCenter }: {
@@ -2465,6 +2506,10 @@ export class Viewport implements IViewport {
     // (undocumented)
     protected setCameraNoEvent(camera: ICamera): void;
     // (undocumented)
+    setDisplayArea(displayArea: DisplayArea, suppressEvents?: boolean): void;
+    // (undocumented)
+    protected setFitToCanvasCamera(camera: ICamera): void;
+    // (undocumented)
     protected setInitialCamera(camera: ICamera): void;
     // (undocumented)
     setOptions(options: ViewportInputOptions, immediate?: boolean): void;
@@ -2477,7 +2522,7 @@ export class Viewport implements IViewport {
     // (undocumented)
     sHeight: number;
     // (undocumented)
-    protected _shouldUse16BitTexture(): boolean;
+    protected _shouldUseNativeDataType(): boolean;
     // (undocumented)
     readonly suppressEvents: boolean;
     // (undocumented)
@@ -2493,6 +2538,8 @@ export class Viewport implements IViewport {
     // (undocumented)
     protected updateClippingPlanesForActors(updatedCamera: ICamera): void;
     // (undocumented)
+    updateRenderingPipeline: () => void;
+    // (undocumented)
     static get useCustomRenderingPipeline(): boolean;
     // (undocumented)
     worldToCanvas: (worldPos: Point3) => Point2;
@@ -2502,6 +2549,7 @@ export class Viewport implements IViewport {
 type ViewportInputOptions = {
     background?: [number, number, number];
     orientation?: OrientationAxis | OrientationVectors;
+    displayArea?: DisplayArea;
     suppressEvents?: boolean;
     parallelProjection?: boolean;
 };
