@@ -19,6 +19,7 @@ const { getMinMax } = csUtils;
 /**
  * Streaming Image Volume Class that extends ImageVolume base class.
  * It implements load method to load the imageIds and insert them into the volume.
+ *
  */
 export default class BaseStreamingImageVolume extends ImageVolume {
   private framesLoaded = 0;
@@ -896,9 +897,11 @@ export default class BaseStreamingImageVolume extends ImageVolume {
       );
 
       // 3. Caching the image
-      cache.putImageLoadObject(imageId, imageLoadObject).catch((err) => {
-        console.error(err);
-      });
+      if (!cache.getImageLoadObject(imageId)) {
+        cache.putImageLoadObject(imageId, imageLoadObject).catch((err) => {
+          console.error(err);
+        });
+      }
 
       // 4. If we know we won't be able to add another Image to the cache
       //    without breaching the limit, stop here.
