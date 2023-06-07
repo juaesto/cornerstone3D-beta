@@ -22,6 +22,10 @@ import type {
 } from '../types/IViewport';
 import { OrientationAxis } from '../enums';
 import VolumeViewport3D from './VolumeViewport3D';
+import { metaData } from '..';
+import * as _ from 'lodash';
+import { UnionFind } from './dicomimage/unionFind.service';
+import buckets from 'buckets-js';
 
 type ViewportDisplayCoords = {
   sxStartDisplayCoords: number;
@@ -36,6 +40,496 @@ type ViewportDisplayCoords = {
 
 // Rendering engines seem to not like rendering things less than 2 pixels per side
 const VIEWPORT_MIN_SIZE = 2;
+
+// ITI
+const canvases = {
+  image: {
+    canvas: document.createElement('canvas'), // eslint-disable-line
+    context: undefined,
+    data: undefined,
+  },
+  segmentation: {
+    canvas: document.createElement('canvas'), // eslint-disable-line
+    context: undefined,
+    data: undefined,
+  },
+  breast: {
+    canvas: document.createElement('canvas'), // eslint-disable-line
+    context: undefined,
+    data: undefined,
+  },
+};
+
+let factor = 3.0;
+let auxWidth, auxHeight, auxSize;
+let mask, pixclass1, pixclass2, breast, scaledImage;
+const showFGTRegion = false;
+const showFGTBorder = true;
+
+// ITI - Transforma los pixeles de blanco a negro
+function correctIfInverted(image) {
+  const maxValue = 1 << parseInt(metaData.get('BitsStored', image.imageId));
+
+  function invertPixel(px) {
+    return maxValue - px;
+  }
+
+  if (image.invert === true) {
+    const pixelData = image.getPixelData();
+    for (let i = 0; i < pixelData.length; i++) {
+      pixelData[i] = invertPixel(pixelData[i]);
+    }
+
+    const tmp = invertPixel(image.minPixelValue);
+    image.minPixelValue = invertPixel(image.maxPixelValue);
+    image.maxPixelValue = tmp;
+    image.windowCenter = invertPixel(image.windowCenter);
+    image.invert = false;
+  }
+}
+
+function initializeCanvases(width: number, height: number) {
+  canvases.image.canvas.width = width;
+  canvases.image.canvas.height = height;
+  canvases.image.context = canvases.image.canvas.getContext('2d');
+  canvases.image.data = canvases.image.context.getImageData(
+    0,
+    0,
+    width,
+    height
+  );
+
+  // Constants for secondary canvases
+  factor = Math.min(5, 1 + Math.floor(width / 800));
+  auxWidth = Math.ceil(width / factor); // TODO: REVISAR!!!!!!
+  auxHeight = Math.ceil(height / factor); // TODO: REVISAR!!!!!!
+  auxSize = auxWidth * auxHeight;
+
+  canvases.segmentation.canvas.width = auxWidth;
+  canvases.segmentation.canvas.height = auxHeight;
+  canvases.segmentation.context = canvases.segmentation.canvas.getContext('2d');
+  canvases.segmentation.data = canvases.segmentation.context.getImageData(
+    0,
+    0,
+    auxWidth,
+    auxHeight
+  );
+
+  canvases.breast.canvas.width = auxWidth;
+  canvases.breast.canvas.height = auxHeight;
+  canvases.breast.context = canvases.breast.canvas.getContext('2d');
+  canvases.breast.data = canvases.breast.context.getImageData(
+    0,
+    0,
+    auxWidth,
+    auxHeight
+  );
+
+  mask = new Uint8Array(auxSize).fill(1);
+  pixclass1 = new Uint8Array(auxSize);
+  pixclass2 = new Uint8Array(auxSize);
+  breast = new Float32Array(auxSize).fill(1);
+  scaledImage = new Uint32Array(auxSize);
+}
+
+function pointInsidePolygon(x, y, polygon) {
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0],
+      yi = polygon[i][1];
+    const xj = polygon[j][0],
+      yj = polygon[j][1];
+
+    const intersect =
+      yi > y != yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function generateScaled(image) {
+  // Build scaled Image for speed up processes
+  const dicomPixelArray = image.getPixelData();
+  let auxi = 0;
+  for (let y = 0; y < auxHeight; y++) {
+    for (let x = 0; x < auxWidth; x++) {
+      const i = y * factor * image.width + x * factor;
+      scaledImage[auxi++] = dicomPixelArray[i];
+    }
+  }
+}
+
+function generateImage(image, viewport, invalidated) {
+  // console.time('Generación de imagen');
+  //const lut = getLut(image, viewport, invalidated);
+  const pixelData = image.getPixelData();
+  let canvasIdx = 0;
+  let imageIdx = 0;
+  let x, y;
+
+  if (image.minPixelValue < 0) {
+    // Hecho así con código casi duplicado porque mejora el rendimiento
+    for (y = 0; y < image.height; y++) {
+      for (x = 0; x < image.width; x++) {
+        canvases.image.data.data[canvasIdx] = 255;
+        canvases.image.data.data[canvasIdx + 1] = 255;
+        canvases.image.data.data[canvasIdx + 2] = 255;
+        canvases.image.data.data[canvasIdx + 3] = 0;
+        canvasIdx += 4;
+        imageIdx++;
+      }
+    }
+  } else {
+    for (y = 0; y < image.height; y++) {
+      for (x = 0; x < image.width; x++) {
+        canvases.image.data.data[canvasIdx] = 255;
+        canvases.image.data.data[canvasIdx + 1] = 255;
+        canvases.image.data.data[canvasIdx + 2] = 255;
+        canvases.image.data.data[canvasIdx + 3] = 0;
+        canvasIdx += 4;
+        imageIdx++;
+      }
+    }
+  }
+  canvases.image.context.putImageData(canvases.image.data, 0, 0);
+  // console.timeEnd('Generación de imagen');
+}
+
+function generateMask(dmscanData) {
+  let i = 0;
+  const b0 = _.isNumber(dmscanData.borderLines[0])
+    ? Math.floor(dmscanData.borderLines[0] / factor)
+    : null;
+  const b1 = _.isNumber(dmscanData.borderLines[1])
+    ? Math.floor(dmscanData.borderLines[1] / factor)
+    : null;
+  const b2 = _.isNumber(dmscanData.borderLines[2])
+    ? Math.floor(dmscanData.borderLines[2] / factor)
+    : null;
+  const b3 = _.isNumber(dmscanData.borderLines[3])
+    ? Math.floor(dmscanData.borderLines[3] / factor)
+    : null;
+  mask.fill(1);
+
+  for (let y = 0; y < auxHeight; y++) {
+    for (let x = 0; x < auxWidth; x++) {
+      if (
+        (b0 && y < b0) ||
+        (b1 && y > b1) ||
+        (b2 && x < b2) ||
+        (b3 && x > b3)
+      ) {
+        mask[i] = 0;
+      } else {
+        const xf = x * factor;
+        const yf = y * factor;
+        for (let idx = 0; idx < dmscanData.polygons.length; idx++) {
+          if (pointInsidePolygon(xf, yf, dmscanData.polygons[idx])) {
+            mask[i] = 0;
+            break;
+          }
+        }
+      }
+      i++;
+    }
+  }
+}
+
+function changeSegmentation1(dmscanData) {
+  dmscanData.breastArea =
+    connectedComponentLabeling(dmscanData.th1) * factor * factor;
+  dmscanData.leftOrientation = isLeftBreast(dmscanData.rotation);
+}
+
+function connectedComponentLabeling(th1) {
+  const blobLabels = new Uint32Array(auxSize);
+  let curLabel = 1;
+  const equiv = new buckets.Set();
+  pixclass1.fill(0);
+
+  let y, x;
+  let auxi = 0;
+  for (y = 0; y < auxHeight; y++) {
+    for (x = 0; x < auxWidth; x++) {
+      if (mask[auxi] == 1) {
+        if (scaledImage[auxi] > th1) {
+          let n1 = null,
+            n2 = null;
+          let tmplbl;
+          if (y > 0) {
+            tmplbl = blobLabels[auxi - auxWidth];
+            if (tmplbl !== 0) {
+              n1 = tmplbl;
+            }
+          }
+          if (x > 1) {
+            tmplbl = blobLabels[auxi - 1];
+            if (tmplbl !== 0) {
+              n2 = tmplbl;
+            }
+          }
+          if (n1 && n2) {
+            blobLabels[auxi] = n1;
+            if (n1 !== n2) {
+              equiv.add(n1 < n2 ? [n1, n2] : [n2, n1]);
+            }
+          } else if (n1 || n2) {
+            blobLabels[auxi] = n1 || n2;
+          } else {
+            blobLabels[auxi] = curLabel++;
+          }
+        }
+      }
+      auxi++;
+    }
+  }
+
+  const forest = new UnionFind(curLabel);
+  _.forEach(equiv.toArray(), (edge) => {
+    forest.link(edge[0], edge[1]);
+  });
+
+  const roots = {};
+  for (let kk = 0; kk < curLabel; kk++) {
+    roots[kk] = forest.find(kk);
+  }
+
+  const areas = new Uint32Array(curLabel);
+  for (auxi = 0; auxi < auxSize; auxi++) {
+    if (blobLabels[auxi] > 0) {
+      blobLabels[auxi] = roots[blobLabels[auxi]];
+      areas[blobLabels[auxi]]++;
+    }
+  }
+
+  const breastArea = _.max(areas);
+  const breastLabel = _.indexOf(areas, breastArea);
+  for (auxi = 0; auxi < auxSize; auxi++) {
+    if (blobLabels[auxi] == breastLabel) {
+      pixclass1[auxi] = 1;
+    }
+  }
+  return breastArea;
+}
+
+function isLeftBreast(rotation) {
+  let columnBreastAccum, columnMaskAccum, y, yy, x;
+  if (rotation % 180 == 0) {
+    columnBreastAccum = new Array(auxWidth).fill(0);
+    columnMaskAccum = new Array(auxWidth).fill(0);
+    for (y = 0; y < auxHeight; y++) {
+      yy = y * auxWidth;
+      for (x = 0; x < auxWidth; x++) {
+        columnBreastAccum[x] += pixclass1[yy + x];
+        columnMaskAccum[x] += mask[yy + x];
+      }
+    }
+  } else {
+    columnBreastAccum = new Array(auxHeight).fill(0);
+    columnMaskAccum = new Array(auxHeight).fill(0);
+    for (y = 0; y < auxHeight; y++) {
+      yy = y * auxWidth;
+      for (x = 0; x < auxWidth; x++) {
+        columnBreastAccum[y] += pixclass1[yy + x];
+        columnMaskAccum[y] += mask[yy + x];
+      }
+    }
+  }
+
+  const lb = _.takeWhile(columnMaskAccum, function (x) {
+    return x == 0;
+  }).length;
+  const rb = _.dropRightWhile(columnMaskAccum, function (x) {
+    return x == 0;
+  }).length;
+  const mb = (rb - lb) / 2;
+
+  const lsum =
+    _.sum(_.slice(columnBreastAccum, lb, mb + lb)) /
+    _.sum(_.slice(columnMaskAccum, lb, mb + lb));
+  const rsum =
+    _.sum(_.slice(columnBreastAccum, rb - mb, rb)) /
+    _.sum(_.slice(columnMaskAccum, rb - mb, rb));
+
+  // console.timeEnd('Busca orientación');
+  return lsum >= rsum;
+}
+
+function getLimitsX(y0) {
+  let l;
+  for (l = 0; l < auxWidth; l++) {
+    if (pixclass1[y0 + l]) {
+      break;
+    }
+  }
+  let h;
+  for (h = auxWidth - 1; h > 0; h--) {
+    if (pixclass1[y0 + h]) {
+      break;
+    }
+  }
+  if (l < h) {
+    return [l, h];
+  }
+  return false;
+}
+
+function getLimitsY(x) {
+  let l;
+  for (l = 0; l < auxHeight; l++) {
+    if (pixclass1[x + l * auxWidth]) {
+      break;
+    }
+  }
+  let h;
+  for (h = auxHeight - 1; h > 0; h--) {
+    if (pixclass1[x + h * auxWidth]) {
+      break;
+    }
+  }
+  if (l < h) {
+    return [l, h];
+  }
+  return false;
+}
+
+function resetBreastFilter() {
+  // console.time('Limpiando filtro de mama');
+  canvases.breast.context.fillStyle = 'rgba(0, 0, 0, 0)';
+  canvases.breast.context.fillRect(0, 0, auxWidth, auxHeight);
+  canvases.breast.data = canvases.breast.context.getImageData(
+    0,
+    0,
+    auxWidth,
+    auxHeight
+  );
+  // console.timeEnd('Limpiando filtro de mama');
+}
+
+function generateBreastFiltered(alpha, beta, k, isLeft, rotation) {
+  resetBreastFilter();
+  // console.time('Filtro de mama');
+  breast.fill(1);
+  let x, y, y0, limits, v, d;
+  if (rotation % 180 == 0) {
+    for (y = 0; y < auxHeight; y++) {
+      y0 = y * auxWidth;
+      limits = getLimitsX(y0);
+      if (_.isArray(limits) && limits.length == 2) {
+        for (x = limits[0]; x <= limits[1]; x++) {
+          if (isLeft) {
+            d = (x - limits[0]) / (limits[1] - limits[0]);
+          } else {
+            d = (limits[1] - x) / (limits[1] - limits[0]);
+          }
+          v = alpha + (1 - alpha) * Math.pow(d, beta) * k;
+          breast[y0 + x] = v;
+          canvases.breast.data.data[4 * (y0 + x) + 3] = Math.floor(
+            255 - 256 * v
+          );
+        }
+      }
+    }
+  } else {
+    for (x = 0; x < auxWidth; x++) {
+      limits = getLimitsY(x);
+      if (_.isArray(limits) && limits.length == 2) {
+        for (y = limits[0]; y <= limits[1]; y++) {
+          if (isLeft) {
+            d = (y - limits[0]) / (limits[1] - limits[0]);
+          } else {
+            d = (limits[1] - y) / (limits[1] - limits[0]);
+          }
+          v = alpha + (1 - alpha) * Math.pow(d, beta) * k;
+          breast[x + y * auxWidth] = v;
+          canvases.breast.data.data[4 * (x + y * auxWidth) + 3] = Math.floor(
+            255 - 256 * v
+          );
+        }
+      }
+    }
+  }
+
+  canvases.breast.context.putImageData(canvases.breast.data, 0, 0);
+  // console.timeEnd('Filtro de mama');
+}
+
+function changeSegmentation2(dmscanData) {
+  // console.time('Segmentado de umbral 2');
+  pixclass2.fill(0);
+  let auxi = 0;
+  dmscanData.FGTArea = 0;
+  let y, x;
+  for (y = 0; y < auxHeight; y++) {
+    for (x = 0; x < auxWidth; x++) {
+      if (mask[auxi] == 1) {
+        if (dmscanData.breastFilter.alpha < 1) {
+          if (scaledImage[auxi] * breast[auxi] > dmscanData.th2) {
+            pixclass2[auxi] = 1;
+            dmscanData.FGTArea++;
+          }
+        } else {
+          if (scaledImage[auxi] > dmscanData.th2) {
+            pixclass2[auxi] = 1;
+            dmscanData.FGTArea++;
+          }
+        }
+      }
+      auxi++;
+    }
+  }
+
+  dmscanData.FGTArea = dmscanData.FGTArea * factor * factor;
+}
+
+function changeSegmentationBorders() {
+  // console.time('Cálculo de fronteras');
+  let auxidx = 0;
+  let canvasidx = 0;
+  for (let y = 0; y < auxHeight; y++) {
+    for (let x = 0; x < auxWidth; x++) {
+      canvases.segmentation.data.data[canvasidx] = 0;
+      canvases.segmentation.data.data[canvasidx + 1] = 0;
+      canvases.segmentation.data.data[canvasidx + 2] = 0;
+      canvases.segmentation.data.data[canvasidx + 3] = 0;
+
+      if (pixclass1[auxidx] == 0) {
+        if (
+          (x > 0 && pixclass1[auxidx - 1] == 1) ||
+          (x < auxWidth - 1 && pixclass1[auxidx + 1] == 1) ||
+          (y > 0 && pixclass1[auxidx - auxWidth] == 1) ||
+          (y < auxHeight - 1 && pixclass1[auxidx + auxWidth] == 1)
+        ) {
+          canvases.segmentation.data.data[canvasidx + 2] = 255;
+          canvases.segmentation.data.data[canvasidx + 3] = 255;
+        }
+      } else {
+        if (showFGTBorder && pixclass2[auxidx] == 1) {
+          if (
+            (x > 0 && pixclass2[auxidx - 1] == 0) ||
+            (x < auxWidth - 1 && pixclass2[auxidx + 1] == 0) ||
+            (y > 0 && pixclass2[auxidx - auxWidth] == 0) ||
+            (y < auxHeight - 1 && pixclass2[auxidx + auxWidth] == 0)
+          ) {
+            canvases.segmentation.data.data[canvasidx + 1] = 255;
+            canvases.segmentation.data.data[canvasidx + 3] = 255;
+          } else if (showFGTRegion) {
+            // Pinta seg2 transparente
+            canvases.segmentation.data.data[canvasidx + 1] = 100;
+            canvases.segmentation.data.data[canvasidx + 3] = 100;
+          }
+        }
+      }
+      auxidx++;
+      canvasidx += 4;
+    }
+  }
+
+  canvases.segmentation.context.putImageData(canvases.segmentation.data, 0, 0);
+  // console.timeEnd('Cálculo de fronteras');
+}
+
+// FIN ITI
 
 /**
  * A RenderingEngine takes care of the full pipeline of creating viewports and rendering
@@ -1241,6 +1735,142 @@ class RenderingEngine implements IRenderingEngine {
       dWidth,
       dHeight
     );
+
+    // ITI
+    // Crear un nuevo canvas para la capa
+    const capa = document.createElement('canvas');
+    const capaCtx = capa.getContext('2d');
+    capa.width = dWidth;
+    capa.height = dHeight;
+
+    capaCtx.fillStyle = 'red';
+    capaCtx.fillRect(0, 0, capa.width, capa.height);
+
+    onScreenContext.drawImage(capa, 0, 0);
+
+    // ITI
+    // const imageId = viewport.getCurrentImageId();
+
+    // loadAndCacheImage(imageId, null).then(
+    //   (image) => {
+    //     debugger;
+    //     const modality = metaData.get('Modality', imageId);
+    //     const itiMetadata = metaData.get('00191900', imageId);
+    //     const imageJson = itiMetadata ? JSON.parse(itiMetadata) : null;
+    //     const dmscanData = imageJson?.serializableData;
+
+    //     correctIfInverted(image);
+
+    //     if (dmscanData?.breastFilter?.alpha < 1) {
+    //       showFGTBorder = dmscanData.showFGTBorder;
+    //       showFGTRegion = dmscanData.showFGTRegion;
+
+    //       // onScreenContext.setTransform(1, 0, 0, 1, 0, 0);
+
+    //       // clear the canvas
+    //       // onScreenContext.fillStyle = 'black';
+    //       // onScreenContext.fillRect(0, 0, sWidth, sHeight);
+
+    //       if (
+    //         canvases.image.canvas.width !== image.width ||
+    //         canvases.image.canvas.height != image.height
+    //       ) {
+    //         initializeCanvases(image.width, image.height);
+    //       }
+    //       generateScaled(image);
+
+    //       viewport.setProperties({
+    //         invert: dmscanData.invert,
+    //         rotation: dmscanData.rotation,
+    //       });
+
+    //       //toCanvasPixelData
+    //       generateImage(image, viewport, false);
+    //       generateMask(dmscanData);
+    //       changeSegmentation1(dmscanData);
+
+    //       if (dmscanData.breastFilter && dmscanData.breastFilter.alpha < 1) {
+    //         generateBreastFiltered(
+    //           dmscanData.breastFilter.alpha,
+    //           dmscanData.breastFilter.beta,
+    //           dmscanData.breastFilter.k,
+    //           dmscanData.leftOrientation,
+    //           dmscanData.rotation
+    //         );
+    //       }
+
+    //       changeSegmentation2(dmscanData);
+    //       changeSegmentationBorders();
+    //       //fin toCanvasPixelData
+
+    //       onScreenContext.drawImage(
+    //         offScreenCanvas,
+    //         sx,
+    //         sy,
+    //         sWidth,
+    //         sHeight,
+    //         0, //dx
+    //         0, // dy
+    //         dWidth,
+    //         dHeight
+    //       );
+    //       onScreenContext.save();
+    //       onScreenContext.imageSmoothingEnabled = true;
+
+    //       if (dmscanData.breastFilter && dmscanData.breastFilter.alpha < 1) {
+    //         onScreenContext.globalCompositeOperation = 'soft-light';
+
+    //         onScreenContext.drawImage(
+    //           canvases.breast.canvas,
+    //           sx,
+    //           sy,
+    //           sWidth,
+    //           sHeight,
+    //           0, //dx
+    //           0, // dy
+    //           dWidth,
+    //           dHeight
+    //         );
+
+    //         // onScreenContext.drawImage(
+    //         //   canvases.breast.canvas,
+    //         //   0,
+    //         //   0,
+    //         //   image.width,
+    //         //   image.height
+    //         // );
+    //         onScreenContext.restore();
+    //       }
+    //     }
+
+    //     // onScreenContext.drawImage(
+    //     //   canvases.segmentation.canvas,
+    //     //   0,
+    //     //   0,
+    //     //   image.width,
+    //     //   image.height
+    //     // );
+    //     onScreenContext.drawImage(
+    //       canvases.segmentation.canvas,
+    //       sx,
+    //       sy,
+    //       sWidth,
+    //       sHeight,
+    //       0, //dx
+    //       0, // dy
+    //       dWidth,
+    //       dHeight
+    //     );
+    //     onScreenContext.restore();
+    //   },
+    //   (error) => {
+    //     // errorCallback.call(this, error, imageIdIndex, imageId);
+    //   }
+    // );
+    // // FIN ITI
+
+    console.log('canvas.toDataURL');
+    console.log(canvas.toDataURL());
 
     return {
       element,
